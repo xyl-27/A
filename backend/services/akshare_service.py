@@ -3,6 +3,9 @@ import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from utils.logger import logger
+from utils.database import SessionLocal
+from models.market import StockQuote
+from sqlalchemy import select, and_
 
 
 class AkShareService:
@@ -38,18 +41,71 @@ class AkShareService:
             logger.error(f"Error fetching realtime quotes: {e}")
             return []
 
-    def get_stock_historical(self, code: str, period: str = "daily", adjust: str = "qfq") -> List[Dict[str, Any]]:
+    def get_stock_historical(self, code: str, period: str = "daily", adjust: str = "qfq", limit: int = 30) -> List[Dict[str, Any]]:
+        db = SessionLocal()
+        try:
+            from models.market import Stock
+            
+            stock_query = select(Stock).where(Stock.code == code)
+            stock_result = db.execute(stock_query)
+            stock = stock_result.scalar_one_or_none()
+            
+            if not stock:
+                logger.warning(f"Stock {code} not found in database")
+                return self._fetch_from_akshare(code, period, adjust, limit)
+            
+            start_date = datetime(2025, 1, 1).date()
+            
+            quote_query = select(StockQuote).where(
+                and_(
+                    StockQuote.stock_id == stock.id,
+                    StockQuote.trade_date >= start_date
+                )
+            ).order_by(StockQuote.trade_date.desc()).limit(limit)
+            
+            quotes_result = db.execute(quote_query)
+            quotes = quotes_result.scalars().all()
+            
+            if quotes:
+                result = []
+                for q in reversed(quotes):
+                    result.append({
+                        "date": q.trade_date.isoformat(),
+                        "open": float(q.open_price) if q.open_price else None,
+                        "close": float(q.close_price) if q.close_price else None,
+                        "high": float(q.high_price) if q.high_price else None,
+                        "low": float(q.low_price) if q.low_price else None,
+                        "volume": q.volume,
+                        "amount": float(q.amount) if q.amount else None,
+                        "change_rate": float(q.change_rate) if q.change_rate else None,
+                    })
+                logger.info(f"Return {len(result)} records from database for {code}")
+                return result
+            
+            logger.info(f"No data in database for {code}, fetching from AkShare")
+            return self._fetch_from_akshare_and_save(code, period, adjust, limit, stock.id)
+            
+        except Exception as e:
+            logger.error(f"Error fetching historical data for {code}: {e}")
+            return self._fetch_from_akshare(code, period, adjust, limit)
+        finally:
+            db.close()
+
+    def _fetch_from_akshare(self, code: str, period: str, adjust: str, limit: int) -> List[Dict[str, Any]]:
         try:
             symbol = f"{code}" if code.startswith('6') else f"{code}"
-            df = ak.stock_zh_a_hist(symbol=symbol, period=period, start_date='20240101', adjust=adjust)
+            df = ak.stock_zh_a_hist(symbol=symbol, period=period, start_date='20250101', adjust=adjust)
             
             if df is None or df.empty:
+                logger.warning(f"No data from AkShare for {code}")
                 return []
+            
+            df = df.tail(limit)
             
             result = []
             for _, row in df.iterrows():
                 result.append({
-                    "date": row['日期'],
+                    "date": str(row['日期']),
                     "open": float(row['开盘']) if pd.notna(row['开盘']) else None,
                     "close": float(row['收盘']) if pd.notna(row['收盘']) else None,
                     "high": float(row['最高']) if pd.notna(row['最高']) else None,
@@ -60,8 +116,47 @@ class AkShareService:
                 })
             return result
         except Exception as e:
-            logger.error(f"Error fetching historical data for {code}: {e}")
+            logger.error(f"Error fetching from AkShare for {code}: {e}")
             return []
+
+    def _fetch_from_akshare_and_save(self, code: str, period: str, adjust: str, limit: int, stock_id: int) -> List[Dict[str, Any]]:
+        data = self._fetch_from_akshare(code, period, adjust, limit)
+        
+        if not data:
+            return []
+        
+        db = SessionLocal()
+        try:
+            for item in data:
+                trade_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
+                
+                existing = db.query(StockQuote).filter(
+                    and_(StockQuote.stock_id == stock_id, StockQuote.trade_date == trade_date)
+                ).first()
+                
+                if not existing:
+                    quote = StockQuote(
+                        stock_id=stock_id,
+                        trade_date=trade_date,
+                        open_price=item.get('open'),
+                        close_price=item.get('close'),
+                        high_price=item.get('high'),
+                        low_price=item.get('low'),
+                        volume=item.get('volume'),
+                        amount=item.get('amount'),
+                        change_rate=item.get('change_rate'),
+                    )
+                    db.add(quote)
+            
+            db.commit()
+            logger.info(f"Saved {len(data)} records to database for {code}")
+        except Exception as e:
+            logger.error(f"Error saving to database for {code}: {e}")
+            db.rollback()
+        finally:
+            db.close()
+        
+        return data
 
     def get_industry_list(self) -> List[Dict[str, Any]]:
         try:

@@ -101,9 +101,10 @@ async def get_hs300_stocks():
 async def get_historical(
     code: str = Query(..., description="Stock code"),
     period: str = Query("daily", description="Period: daily/weekly/monthly"),
-    adjust: str = Query("qfq", description="Adjust: qfq/hfq/")
+    adjust: str = Query("qfq", description="Adjust: qfq/hfq/"),
+    limit: int = Query(30, ge=1, le=250, description="Number of records")
 ):
-    result = ak_share_service.get_stock_historical(code, period, adjust)
+    result = ak_share_service.get_stock_historical(code, period, adjust, limit)
     return result
 
 
