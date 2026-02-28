@@ -3,54 +3,62 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from utils.database import get_db
-from services.data_service import DataService
+from services.akshare_service import ak_share_service
 
 router = APIRouter(prefix="/industry", tags=["industry"])
 
 
-class IndustryNode(BaseModel):
+class IndustryResponse(BaseModel):
     code: str
     name: str
-    level: int
-    children: Optional[List[Dict[str, Any]]] = None
-    stocks: Optional[List[Dict[str, str]]] = None
-    stats: Optional[Dict[str, Any]] = None
+    stock_count: Optional[int] = None
+    change_rate: Optional[float] = None
+    total_market_cap: Optional[float] = None
 
 
-@router.get("/tree", response_model=List[Dict[str, Any]])
-async def get_industry_tree(db: Session = Depends(get_db)):
-    service = DataService(db)
-    result = await service.get_industry_tree()
+class StockResponse(BaseModel):
+    code: str
+    name: str
+    close_price: Optional[float]
+    change_rate: Optional[float]
+    volume: Optional[int]
+    amount: Optional[float]
+    amplitude: Optional[float]
+    turnover_rate: Optional[float]
+    pe: Optional[float]
+
+
+@router.get("/list", response_model=List[IndustryResponse])
+async def get_industry_list():
+    result = ak_share_service.get_industry_list()
     return result
 
 
-@router.get("/funds")
-async def get_industry_funds(
-    industry_code: str = Query(..., description="Industry code"),
-    days: int = Query(5, ge=1, le=60),
-    db: Session = Depends(get_db)
-):
-    return {
-        "industry_code": industry_code,
-        "days": days,
-        "main_fund_flow": 100000000,
-        "small_fund_flow": -50000000,
-        "net_flow": 50000000,
-        "trend": "inflow"
-    }
-
-
-@router.get("/stocks")
+@router.get("/stocks", response_model=List[StockResponse])
 async def get_industry_stocks(
     industry_code: str = Query(..., description="Industry code"),
-    level: int = Query(1, ge=1, le=2),
-    db: Session = Depends(get_db)
 ):
-    return {
-        "industry_code": industry_code,
-        "level": level,
-        "stocks": [
-            {"code": "000001", "name": "平安银行", "change_rate": 2.5},
-            {"code": "600000", "name": "浦发银行", "change_rate": 1.8}
-        ]
-    }
+    result = ak_share_service.get_industry_stocks(industry_code)
+    return result
+
+
+@router.get("/concept/list")
+async def get_concept_list():
+    result = ak_share_service.get_concept_list()
+    return result
+
+
+@router.get("/concept/stocks")
+async def get_concept_stocks(
+    concept_code: str = Query(..., description="Concept code"),
+):
+    result = ak_share_service.get_concept_stocks(concept_code)
+    return result
+
+
+@router.get("/fund-flow")
+async def get_fund_flow(
+    code: str = Query(..., description="Stock code"),
+):
+    result = ak_share_service.get_fund_flow(code)
+    return result
